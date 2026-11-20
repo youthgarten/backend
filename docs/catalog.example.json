@@ -1,0 +1,37 @@
+{
+  "job": "무역 사무",
+  "key": "shipping-delay-reply",
+  "version": 1,
+  "lecture": {
+    "title": "AI로 영문 비즈니스 메일 쓰고 검토하기",
+    "youtube_video_id": "REPLACE_WITH_APPROVED_VIDEO_ID",
+    "duration_sec": 600,
+    "sort_order": 1
+  },
+  "task": {
+    "title": "바이어 납기 지연 항의 메일 회신",
+    "situation": "바이어가 납기 지연의 사유와 확정 일정을 요청했습니다.",
+    "instruction": "제공된 일정표를 확인하고 영문 회신을 작성합니다.",
+    "time_limit_min": 30,
+    "materials": [
+      {
+        "title": "선적 일정표",
+        "content": "11월 25일은 미확정, 11월 28일은 확정입니다."
+      }
+    ],
+    "rubric": {
+      "version": "DUAL_V1",
+      "task_solution_min_score": 40,
+      "ai_use_min_score": 40,
+      "verify_min_score": 12,
+      "criterion_max_scores": {"RESULT": 50, "PROMPT": 15, "VERIFY": 20, "IMPROVE": 15},
+      "required_checks": [
+        {
+          "check_id": "SHIPPING_DATE",
+          "label": "확정 선적일을 정확히 안내합니다.",
+          "rule": "제공된 선적 일정표의 확정일을 안내하고 미확정 날짜를 약속하지 않습니다."
+        }
+      ]
+    }
+  }
+}

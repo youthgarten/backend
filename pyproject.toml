@@ -1,0 +1,25 @@
+[project]
+name = "ai-learning-backend"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = [
+    "alembic>=1.14,<2",
+    "anyio>=4,<5",
+    "bcrypt>=4,<6",
+    "fastapi>=0.115,<1",
+    "pyjwt>=2,<3",
+    "pymysql[rsa]>=1.1,<2",
+    "python-dotenv>=1.0,<2",
+    "sqlalchemy>=2.0,<3",
+    "uvicorn>=0.34,<1",
+    "websockets>=14,<20",
+]
+
+[dependency-groups]
+dev = [
+ "httpx2<3",
+ "pytest>=8,<10",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
