@@ -1,8 +1,5 @@
-from fastapi import FastAPI
+"""Uvicorn and FastAPI CLI entry point for this repository."""
 
-app = FastAPI(title="youthgarten API")
+from app.main import app
 
-
-@app.get("/health")
-def health():
-    return {"status": "ok"}
+__all__ = ["app"]
