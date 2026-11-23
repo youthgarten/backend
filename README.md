@@ -15,14 +15,14 @@ FastAPI와 MySQL 8 기반의 AI 교육 플랫폼 백엔드입니다. 필수 강�
 ```powershell
 uv sync --locked --python 3.14
 uv run --locked python -m alembic upgrade head
-uv run --locked python -m scripts.publish_catalog docs/catalog.trade-delay.json
+uv run --locked python -m scripts.seed
 uv run --locked python -m uvicorn main:app --host 127.0.0.1 --port 8000 --workers 1
 ```
 
 `requirements.txt`로 설치하는 환경에서는 가상환경을 활성화하고 `pip install -r requirements.txt`를 사용합니다. 마이그레이션을 적용한 뒤 `fastapi dev main.py`로 실행할 수 있습니다.
 
 - [Swagger UI](http://127.0.0.1:8000/docs) · [OpenAPI JSON](http://127.0.0.1:8000/openapi.json) · [DB 준비 상태](http://127.0.0.1:8000/health/ready)
-- `scripts.seed`는 모의 강의가 필요한 개발·테스트용입니다. 실제 납기 지연 과정이 게시돼 있으면 같은 모의 과정을 추가하지 않습니다.
+- `scripts.seed`는 실제 납기 지연 강의와 과제를 등록합니다. 개발·테스트에서 모의 강의가 필요하면 `scripts.seed --demo`를 실행합니다.
 
 ## 환경 변수
 
@@ -53,7 +53,9 @@ uv run --locked python -m scripts.publish_catalog catalog.json
 
 같은 직무에서 같은 `key`와 `version`으로 같은 파일을 적용하면 기존 항목을 반환합니다. 영상이나 평가 자료를 교체할 때는 같은 키의 새 버전을 게시합니다. 새 목록에는 최신 버전을 표시하고 이전 응시와 수강 기록은 기존 버전에 남깁니다.
 
-[납기 지연 회신 카탈로그](docs/catalog.trade-delay.json)의 `local:trade-delay-v1`은 같은 출처의 `/lecture-media/trade-delay-v1.mp4`를 재생합니다. Vite는 프론트의 `public/lecture-media/`에 있는 영상 파일을 빌드에 포함합니다. 강의 길이 697초에서 중복을 제외한 누적 558초부터 시험에 응시할 수 있습니다.
+[납기 지연 회신 카탈로그 v2](docs/catalog.trade-delay.json)는 YouTube 영상 `c9pBqlOSnx4`(697초)를 사용합니다. 누적 558초부터 시험에 응시할 수 있습니다. 기존 MP4 카탈로그 v1에서 v2를 게시하면 새 목록에는 YouTube 강의가 표시되고 종전 시청·응시 기록은 v1에 남습니다.
+
+`python -m scripts.seed`는 기록이 비어 있고 과제 내용이 일치하는 기존 임시 강의의 ID를 재사용합니다. 기존 임시 강의에 기록이 있으면 그 강의를 이전 버전으로 보존하고 새 버전을 등록합니다. Compose에서 마이그레이션 후 운영 데이터에 적용하려면 `docker compose run --rm migrate python -m scripts.seed`를 실행합니다.
 
 같은 과제의 임시 강의가 있고 수강·응시 기록이 비어 있으면, 최초 카탈로그 게시 시 `--adopt-unstarted-lecture <강의 ID>`로 기존 강의와 과제 ID를 사용합니다. 이 옵션은 기존 과제의 내용이 카탈로그와 일치할 때 적용됩니다.
 
@@ -82,6 +84,7 @@ AI_TIMEOUT_SECONDS=45
 
 - Compose를 사용할 때는 별도 파일에 `MYSQL_APP_PASSWORD`, `MYSQL_ROOT_PASSWORD`, `JWT_SECRET`, 모델 설정을 넣고 `docker compose --env-file <환경 파일> up --build`를 실행합니다. DB 접속 URL의 비밀번호에는 URL 안전 문자를 사용합니다. Compose는 MySQL 8과 마이그레이션을 먼저 실행한 뒤 API를 루프백에 엽니다.
 - HTTPS 프록시에서 프론트 정적 파일과 `/api`를 같은 출처로 제공하고 WebSocket Upgrade를 전달합니다. 신뢰할 프록시 주소와 브라우저 출처를 제한합니다. 모델 서버 주소는 API 프로세스나 컨테이너에서 연결할 수 있어야 합니다.
+- Vercel 프론트를 사용하면 프로젝트의 `VITE_PUBLIC_BACKEND_ORIGIN`에 공개 백엔드 HTTPS 출처를 설정합니다. Vercel은 브라우저의 `/api/v1/` 요청을 이 출처로 전달하고, Phaser는 같은 백엔드의 `wss://` 주소에 직접 접속합니다. 운영의 `WS_ALLOWED_ORIGINS`에 `https://youthgarten.vercel.app`을 포함하고 `SECURE_COOKIES=1`을 사용합니다. Compose는 출처 미지정 시 이 Vercel 주소를 기본값으로 사용합니다.
 - `/health/live`는 프로세스, `/health/ready`는 DB 연결, `/health/grading`은 채점 작업 상태·모델 설정 여부를 확인합니다. 실제 모델 응답 검증은 아래 별도 명령으로 실행합니다.
 - `uv run --locked python -m scripts.prune_sessions`로 만료 7일이 지난 토큰의 정리 대상을 확인합니다. 운영 보존 정책에 맞춰 `--apply`를 지정하면 한 번에 기본 1,000행을 정리합니다.
 - 스테이징에서 백업을 별도 DB에 복원하고 마이그레이션 후 채점·결과 조회를 시험합니다. 롤백이 필요하면 해당 리비전에서 추가된 데이터와 이전 API의 호환성을 확인한 뒤 복원 또는 전진 수정 중 적합한 방법을 적용합니다.

@@ -103,6 +103,19 @@ def test_cross_origin_map_connection_is_rejected(client, monkeypatch):
     assert closed.value.code == 4403
 
 
+def test_vercel_origin_can_open_an_authenticated_map_connection(client, register, monkeypatch):
+    origin = "https://youthgarten.vercel.app"
+    monkeypatch.setenv("WS_ALLOWED_ORIGINS", origin)
+    _, _, login = register()
+    with client.websocket_connect(PATH, headers={"Origin": origin}) as socket:
+        socket.send_json({"type": "auth", "access_token": login.json()["access_token"]})
+        assert socket.receive_json()["type"] == "snapshot"
+    with client.websocket_connect(PATH, headers={"Origin": "https://unexpected.example"}) as socket:
+        with pytest.raises(WebSocketDisconnect) as closed:
+            socket.receive_json()
+        assert closed.value.code == 4403
+
+
 def test_invalid_direction_is_ignored(client, register):
     _, _, login_a = register()
     _, _, login_b = register()

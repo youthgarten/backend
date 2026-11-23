@@ -105,6 +105,35 @@ class PublishedCatalog:
     task_id: int
 
 
+def catalog_content_hash(content: dict) -> str:
+    serialized = json.dumps(content, ensure_ascii=False, sort_keys=True)
+    return sha256(serialized.encode()).hexdigest()
+
+
+def has_learner_activity(session: Session, lecture_id: int, task_id: int) -> bool:
+    history = (
+        select(LectureProgress.lecture_id).where(LectureProgress.lecture_id == lecture_id),
+        select(Attempt.id).where(Attempt.task_id == task_id),
+    )
+    return any(session.scalar(query.limit(1).with_for_update()) is not None for query in history)
+
+
+def existing_assessment(session: Session, task: Task) -> dict:
+    materials = session.scalars(
+        select(TaskMaterial).where(TaskMaterial.task_id == task.id)
+        .order_by(TaskMaterial.sort_order, TaskMaterial.id)
+        .with_for_update()
+    )
+    return {
+        "title": task.title,
+        "situation": task.situation,
+        "instruction": task.instruction,
+        "time_limit_min": task.time_limit_min,
+        "rubric": task.grading_rubric,
+        "materials": [{"title": m.title, "content": m.content} for m in materials],
+    }
+
+
 def adopt_unstarted_lecture(
     session: Session, catalog: Catalog, job_id: int, lecture_id: int
 ) -> tuple[Lecture, Task]:
@@ -117,25 +146,14 @@ def adopt_unstarted_lecture(
     if existing is None:
         raise PublishConflict("Existing lecture and assessment must belong to the catalog job.")
     lecture, task = existing
-    history = (
-        select(CatalogRelease.lecture_id).where(CatalogRelease.lecture_id == lecture.id),
-        select(LectureProgress.lecture_id).where(LectureProgress.lecture_id == lecture.id),
-        select(Attempt.id).where(Attempt.task_id == task.id),
-    )
-    if any(session.scalar(query.limit(1).with_for_update()) is not None for query in history):
-        raise PublishConflict("The existing lecture is already released or has learner activity.")
-
-    materials = session.scalars(
-        select(TaskMaterial).where(TaskMaterial.task_id == task.id)
-        .order_by(TaskMaterial.sort_order, TaskMaterial.id)
+    released = session.scalar(
+        select(CatalogRelease.lecture_id).where(CatalogRelease.lecture_id == lecture.id)
         .with_for_update()
     )
-    assessment = {
-        name: getattr(task, name) for name in ("title", "situation", "instruction", "time_limit_min")
-    }
-    assessment["rubric"] = task.grading_rubric
-    assessment["materials"] = [{"title": m.title, "content": m.content} for m in materials]
-    if assessment != catalog.task.model_dump() or task.sort_order != catalog.lecture.sort_order:
+    if released is not None or has_learner_activity(session, lecture.id, task.id):
+        raise PublishConflict("The existing lecture is already released or has learner activity.")
+
+    if existing_assessment(session, task) != catalog.task.model_dump() or task.sort_order != catalog.lecture.sort_order:
         raise PublishConflict("The existing assessment must match the catalog.")
     for field, value in catalog.lecture.model_dump().items():
         setattr(lecture, field, value)
@@ -146,8 +164,7 @@ def publish_catalog(
     session: Session, catalog: Catalog, *, adopt_lecture_id: int | None = None
 ) -> PublishedCatalog:
     """Publish atomically in the caller's transaction."""
-    serialized = json.dumps(catalog.model_dump(), ensure_ascii=False, sort_keys=True)
-    content_hash = sha256(serialized.encode()).hexdigest()
+    content_hash = catalog_content_hash(catalog.model_dump())
 
     # A job row serializes publishing across concurrent importers for that job.
     statement = insert(Job).values(name=catalog.job)

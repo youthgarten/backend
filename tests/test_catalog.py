@@ -145,7 +145,7 @@ def test_trade_video_unlocks_its_assessment_at_558_unique_seconds(trade_video, c
     headers = bearer(login)
     lecture_id, task_id = published.lecture_id, published.task_id
     detail = client.get(f"/api/v1/lectures/{lecture_id}", headers=headers).json()
-    assert detail["youtube_video_id"] == "local:trade-delay-v1"
+    assert detail["youtube_video_id"] == "c9pBqlOSnx4"
     assert detail["task_id"] == task_id and detail["duration_sec"] == 697
 
     jumped = report(client, headers, lecture_id, [], 680)

@@ -1,10 +1,10 @@
 {
   "job": "무역 사무",
   "key": "shipping-delay-reply",
-  "version": 1,
+  "version": 2,
   "lecture": {
     "title": "AI로 납기 지연 회신 작성하기",
-    "youtube_video_id": "local:trade-delay-v1",
+    "youtube_video_id": "c9pBqlOSnx4",
     "duration_sec": 697,
     "sort_order": 1
   },
