@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 from typing import Annotated
 
@@ -21,13 +22,75 @@ from app.models import (
     ChatMessage,
     Job,
     Lecture,
+    LectureProgress,
     Task,
     TaskMaterial,
     User,
 )
-from scripts.seed import JOB_NAME, TASK_TITLE, seed
+from app.models.catalog import CatalogRelease
+from scripts.publish_catalog import Catalog, publish_catalog
+from scripts.seed import JOB_NAME, TASK_TITLE, TRADE_MANIFEST, seed, seed_demo
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_default_seed_publishes_the_youtube_trade_lesson(engine):
+    with Session(engine) as session:
+        seed_demo(session)
+        job = session.scalar(select(Job).where(Job.name == JOB_NAME))
+        original = session.scalars(select(Lecture).where(Lecture.job_id == job.id)).one()
+        seed(session)
+        seed(session)
+        release = session.scalars(select(CatalogRelease).where(
+            CatalogRelease.job_id == job.id,
+            CatalogRelease.catalog_key == "shipping-delay-reply",
+            CatalogRelease.active.is_(True),
+        )).one()
+        lecture = session.get(Lecture, release.lecture_id)
+        task = session.scalars(select(Task).where(Task.lecture_id == lecture.id)).one()
+        assert (release.version, lecture.youtube_video_id, lecture.duration_sec) == (2, "c9pBqlOSnx4", 697)
+        assert lecture.id == original.id
+        assert task.title == TASK_TITLE
+
+
+def test_seed_preserves_started_legacy_lecture_and_lists_only_v2(engine):
+    with Session(engine) as session:
+        seed_demo(session)
+        job = session.scalar(select(Job).where(Job.name == JOB_NAME))
+        old = session.scalars(select(Lecture).where(Lecture.job_id == job.id)).one()
+        old_video = old.youtube_video_id
+        user = User(login_id="started_placeholder", password_hash="fixture", nickname="검수",
+                    job_id=job.id, created_at=utc_now())
+        session.add(user)
+        session.flush()
+        progress = LectureProgress(user_id=user.id, lecture_id=old.id, watched_ranges=[[0, 8]],
+                                   watched_sec=8, last_position_sec=8, updated_at=utc_now())
+        session.add(progress)
+        session.flush()
+
+        release = seed(session)
+        archived = session.get(CatalogRelease, (job.id, "shipping-delay-reply", 1))
+        current = session.get(CatalogRelease, (job.id, "shipping-delay-reply", 2))
+        assert archived.lecture_id == old.id and not archived.active
+        assert current.lecture_id == release.lecture_id and current.active
+        assert old.youtube_video_id == old_video and progress.watched_sec == 8
+        assert session.get(Lecture, current.lecture_id).youtube_video_id == "c9pBqlOSnx4"
+        assert seed(session) == release
+
+
+def test_seed_supersedes_published_mp4_version(engine):
+    with Session(engine) as session:
+        seed_demo(session)
+        job = session.scalar(select(Job).where(Job.name == JOB_NAME))
+        old = session.scalars(select(Lecture).where(Lecture.job_id == job.id)).one()
+        v1 = json.loads(TRADE_MANIFEST.read_text(encoding="utf-8"))
+        v1["version"] = 1
+        v1["lecture"]["youtube_video_id"] = "local:trade-delay-v1"
+        publish_catalog(session, Catalog.model_validate(v1), adopt_lecture_id=old.id)
+        v2 = seed(session)
+        assert v2.lecture_id != old.id and old.youtube_video_id == "local:trade-delay-v1"
+        assert not session.get(CatalogRelease, (job.id, "shipping-delay-reply", 1)).active
+        assert session.get(CatalogRelease, (job.id, "shipping-delay-reply", 2)).active
 
 
 @pytest.fixture(scope="module")
@@ -104,8 +167,8 @@ def test_initial_migration_uses_mysql_8_and_expected_tables(engine):
 
 def test_seed_can_be_run_twice(engine):
     with Session(engine) as session:
-        seed(session)
-        seed(session)
+        seed_demo(session)
+        seed_demo(session)
         job = session.scalars(select(Job).where(Job.name == "무역 사무")).one()
         lecture = session.scalars(select(Lecture).where(Lecture.job_id == job.id)).one()
         task = session.scalars(select(Task).where(Task.lecture_id == lecture.id)).one()
@@ -129,7 +192,7 @@ def test_seed_can_be_run_twice(engine):
 @pytest.fixture
 def attempt_setup(engine):
     with Session(engine) as session:
-        seed(session)
+        seed_demo(session)
         task = session.scalars(
             select(Task).join(Job).where(Job.name == JOB_NAME, Task.title == TASK_TITLE)
         ).one()

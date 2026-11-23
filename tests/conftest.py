@@ -14,7 +14,7 @@ from app.db import database_url, make_engine
 from app.main import create_app
 from app.models import Attempt, LectureProgress, User
 from app.services.ai import ChatCompletionsProvider
-from scripts.seed import seed
+from scripts.seed import seed_demo
 
 
 class Clock:
@@ -38,7 +38,7 @@ def api_engine():
         config.attributes["connection"] = connection
         command.upgrade(config, "head")
     with Session(engine) as session, session.begin():
-        seed(session)
+        seed_demo(session)
     yield engine
     engine.dispose()
 

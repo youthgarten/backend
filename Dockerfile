@@ -10,6 +10,7 @@ RUN uv sync --locked --no-dev --no-install-project
 COPY app ./app
 COPY migrations ./migrations
 COPY scripts ./scripts
+COPY docs/catalog.trade-delay.json ./docs/catalog.trade-delay.json
 COPY main.py alembic.ini ./
 RUN useradd --system --no-create-home backend
 USER backend
