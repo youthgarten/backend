@@ -194,7 +194,7 @@ erDiagram
 | id | INT | PK, AUTO_INCREMENT | |
 | job_id | INT | FK → job.id, NOT NULL | |
 | title | VARCHAR(100) | NOT NULL | |
-| youtube_video_id | VARCHAR(20) | NOT NULL | 유튜브 영상 ID (주소의 `v=` 뒤 값) |
+| youtube_video_id | VARCHAR(20) | NOT NULL | 유튜브 영상 ID 또는 `local:<키>` 형식의 같은 출처 MP4 식별자 |
 | duration_sec | INT | NOT NULL | 영상 길이(초). 수강률 계산에 쓴다 |
 | sort_order | INT | NOT NULL | 대시보드 표시 순서 |
 

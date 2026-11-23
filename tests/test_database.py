@@ -25,7 +25,7 @@ from app.models import (
     TaskMaterial,
     User,
 )
-from scripts.seed import seed
+from scripts.seed import JOB_NAME, TASK_TITLE, seed
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -130,7 +130,9 @@ def test_seed_can_be_run_twice(engine):
 def attempt_setup(engine):
     with Session(engine) as session:
         seed(session)
-        task = session.scalars(select(Task)).one()
+        task = session.scalars(
+            select(Task).join(Job).where(Job.name == JOB_NAME, Task.title == TASK_TITLE)
+        ).one()
         now = utc_now()
         user = User(
             login_id="schema_test",

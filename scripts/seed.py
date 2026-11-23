@@ -4,6 +4,7 @@ from sqlalchemy.orm import Session
 
 from app.db import database_url, make_engine
 from app.models import Job, Lecture, Task, TaskMaterial
+from app.models.catalog import CatalogRelease
 
 JOB_NAME = "무역 사무"
 LECTURE_TITLE = "AI로 영문 비즈니스 메일 쓰고 검토하기"
@@ -35,6 +36,14 @@ def seed(session: Session) -> None:
     statement = insert(Job).values(name=JOB_NAME)
     session.execute(statement.on_duplicate_key_update(name=JOB_NAME))
     job = session.scalars(select(Job).where(Job.name == JOB_NAME)).one()
+
+    published = session.scalar(select(CatalogRelease.lecture_id).where(
+        CatalogRelease.job_id == job.id,
+        CatalogRelease.catalog_key == "shipping-delay-reply",
+        CatalogRelease.active.is_(True),
+    ))
+    if published is not None:
+        return
 
     lecture = session.scalars(
         select(Lecture).where(Lecture.job_id == job.id, Lecture.title == LECTURE_TITLE)

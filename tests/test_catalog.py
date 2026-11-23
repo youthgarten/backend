@@ -1,18 +1,21 @@
+import json
 from copy import deepcopy
 from datetime import datetime, timedelta
+from pathlib import Path
 from uuid import uuid4
 
 import pytest
 from pydantic import ValidationError
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
+from support import bearer, report, watch_to
 
 from app.api.lectures import own_lecture
 from app.api.tasks import own_task
 from app.api.users import passed_count
 from app.errors import ApiError
-from app.models import Attempt, Job, Lecture, Task, TaskMaterial, User
-from app.models.catalog import conceptual_pass_count, lecture_is_listed
+from app.models import Attempt, Job, Lecture, LectureProgress, Task, TaskMaterial, User
+from app.models.catalog import CatalogRelease, conceptual_pass_count, lecture_is_listed
 from app.services.grade_output import GradeOutput
 from app.services.grading import save_grade
 from app.services.results import result_info
@@ -49,11 +52,115 @@ def manifest():
     }
 
 
-@pytest.mark.parametrize("video,duration", [("mock:demo", 600), ("AbCdEf012_-", 0)])
+@pytest.mark.parametrize("video,duration", [
+    ("mock:demo", 600), ("AbCdEf012_-", 0), ("local:../secret", 697),
+    ("local:" + "a" * 15, 697),
+])
 def test_catalog_validates_video_shape_and_duration(manifest, video, duration):
     manifest["lecture"].update(youtube_video_id=video, duration_sec=duration)
     with pytest.raises(ValidationError):
         Catalog.model_validate(manifest)
+
+
+def test_catalog_accepts_a_bundled_mp4_key(manifest):
+    manifest["lecture"].update(youtube_video_id="local:trade-delay-v1", duration_sec=697)
+    assert Catalog.model_validate(manifest).lecture.youtube_video_id == "local:trade-delay-v1"
+
+
+def test_catalog_reuses_unstarted_lecture_only_when_the_assessment_matches(api_engine, manifest):
+    manifest["job"] += uuid4().hex[:8]
+    manifest["lecture"].update(youtube_video_id="local:trade-delay-v1", duration_sec=697)
+    catalog = Catalog.model_validate(manifest)
+    with Session(api_engine) as session:
+        job = Job(name=catalog.job)
+        session.add(job)
+        session.flush()
+        lecture = Lecture(job_id=job.id, title="임시 강의", youtube_video_id="mock:demo", duration_sec=600, sort_order=1)
+        session.add(lecture)
+        session.flush()
+        task = Task(
+            job_id=job.id, lecture_id=lecture.id, title=catalog.task.title,
+            situation=catalog.task.situation, instruction=catalog.task.instruction,
+            time_limit_min=catalog.task.time_limit_min, grading_rubric=catalog.task.rubric.model_dump(), sort_order=1,
+        )
+        session.add(task)
+        session.flush()
+        material = TaskMaterial(task_id=task.id, title="자료", content="임시 내용", sort_order=1)
+        session.add(material)
+        session.flush()
+
+        with pytest.raises(PublishConflict, match="assessment"):
+            publish_catalog(session, catalog, adopt_lecture_id=lecture.id)
+        material.content = "내용"
+        user = User(
+            job_id=job.id, login_id=f"adopt_{uuid4().hex[:12]}", password_hash="fixture",
+            nickname="검수", created_at=datetime(2026, 11, 20, 3),
+        )
+        session.add(user)
+        session.flush()
+        progress = LectureProgress(
+            user_id=user.id, lecture_id=lecture.id, watched_ranges=[[0, 1]], watched_sec=1,
+            last_position_sec=1, updated_at=user.created_at,
+        )
+        session.add(progress)
+        session.flush()
+        with pytest.raises(PublishConflict, match="learner activity"):
+            publish_catalog(session, catalog, adopt_lecture_id=lecture.id)
+        session.delete(progress)
+        session.flush()
+        attempt = _attempt(user.id, task.id, catalog.task.rubric.model_dump())
+        session.add(attempt)
+        session.flush()
+        with pytest.raises(PublishConflict, match="learner activity"):
+            publish_catalog(session, catalog, adopt_lecture_id=lecture.id)
+        session.delete(attempt)
+        session.flush()
+        release = publish_catalog(session, catalog, adopt_lecture_id=lecture.id)
+        assert (release.lecture_id, release.task_id) == (lecture.id, task.id)
+        assert lecture.youtube_video_id == "local:trade-delay-v1"
+        assert lecture.duration_sec == 697
+        assert publish_catalog(session, catalog, adopt_lecture_id=lecture.id) == release
+
+
+@pytest.fixture
+def trade_video(api_engine):
+    manifest_path = Path(__file__).resolve().parents[1] / "docs/catalog.trade-delay.json"
+    manifest = _unique_catalog(json.loads(manifest_path.read_text(encoding="utf-8")))
+    catalog = Catalog.model_validate(manifest)
+    with Session(api_engine) as session, session.begin():
+        published = publish_catalog(session, catalog)
+        job_id = session.scalar(select(Job.id).where(Job.name == catalog.job))
+    yield catalog, published
+    with Session(api_engine) as session, session.begin():
+        session.execute(delete(TaskMaterial).where(TaskMaterial.task_id == published.task_id))
+        session.execute(delete(Task).where(Task.id == published.task_id))
+        session.execute(delete(CatalogRelease).where(CatalogRelease.lecture_id == published.lecture_id))
+        session.execute(delete(Lecture).where(Lecture.id == published.lecture_id))
+        session.execute(delete(Job).where(Job.id == job_id))
+
+
+def test_trade_video_unlocks_its_assessment_at_558_unique_seconds(trade_video, client, clock, register):
+    catalog, published = trade_video
+    _, _, login = register(job_name=catalog.job)
+    headers = bearer(login)
+    lecture_id, task_id = published.lecture_id, published.task_id
+    detail = client.get(f"/api/v1/lectures/{lecture_id}", headers=headers).json()
+    assert detail["youtube_video_id"] == "local:trade-delay-v1"
+    assert detail["task_id"] == task_id and detail["duration_sec"] == 697
+
+    jumped = report(client, headers, lecture_id, [], 680)
+    assert jumped.json()["progress_rate"] == 0
+    below = watch_to(client, headers, clock, lecture_id, 557)
+    assert below == {"progress_rate": 0.79, "completed": False, "just_completed": False}
+    locked = client.post("/api/v1/attempts", headers=headers, json={"task_id": task_id})
+    assert (locked.status_code, locked.json()["error"]["code"]) == (403, "LECTURE_NOT_COMPLETED")
+
+    clock.advance(seconds=1)
+    progress = report(client, headers, lecture_id, [[557, 558]], 558)
+    assert progress.json() == {"progress_rate": 0.8, "completed": True, "just_completed": True}
+    started = client.post("/api/v1/attempts", headers=headers, json={"task_id": task_id})
+    assert started.status_code == 201
+    assert started.json()["task"]["id"] == task_id
 
 
 def test_catalog_validates_rubric_and_required_check_ids(manifest):
