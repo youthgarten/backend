@@ -3,6 +3,7 @@
 FastAPI와 MySQL 8 기반의 AI 교육 플랫폼 백엔드입니다. 필수 강의의 중복 제외 시청 구간이 80%에 도달하면 실무 과제에 응시할 수 있습니다. 채점 결과는 실무 과제 해결과 AI 활용의 점수·충족 여부, 필수 요건 판정, 근거를 제공합니다.
 
 - [API 명세서](docs/2_API명세서.md) · [ERD](docs/1_ERD.md) · [백엔드 MVP 개발 계획](docs/백엔드_MVP_개발계획.md)
+- [구현 및 배포 현황](docs/구현_및_배포_현황.md)
 - [백엔드 개선 계획](docs/superpowers/plans/2026-11-20-backend-improvement.md)
 - [실제 AI 채점 검증](docs/실제_AI_채점_검증.md) · [이전 Qwen 채점 결과 JSON](docs/실제_AI_채점_결과.json)
 
