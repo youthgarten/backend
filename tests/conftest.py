@@ -69,11 +69,11 @@ def client(application):
 def register(client, api_engine):
     ids = []
 
-    def create(password="testing-password"):
+    def create(password="testing-password", *, job_name="무역 사무"):
         job = next(
             job
             for job in client.get("/api/v1/jobs").json()
-            if job["name"] == "무역 사무"
+            if job["name"] == job_name
         )
         body = {
             "login_id": "u_" + uuid4().hex[:16],

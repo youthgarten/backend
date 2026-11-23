@@ -1,0 +1,45 @@
+{
+  "job": "무역 사무",
+  "key": "shipping-delay-reply",
+  "version": 1,
+  "lecture": {
+    "title": "AI로 납기 지연 회신 작성하기",
+    "youtube_video_id": "local:trade-delay-v1",
+    "duration_sec": 697,
+    "sort_order": 1
+  },
+  "task": {
+    "title": "바이어 납기 지연 항의 메일 회신",
+    "situation": "해외 바이어가 납기 지연에 항의하는 메일을 보냈다.",
+    "instruction": "상황을 파악하고 바이어에게 보낼 영문 회신 메일을 작성한다.",
+    "time_limit_min": 30,
+    "materials": [
+      {
+        "title": "바이어 메일 원문",
+        "content": "Dear team, our shipment was due November 23. Please confirm the new shipping date and explain the delay."
+      },
+      {
+        "title": "계약서 일부",
+        "content": "공급사는 지연을 확인하면 바이어에게 지연 사유와 확정 일정을 서면으로 안내한다."
+      },
+      {
+        "title": "선적 일정표",
+        "content": "| 일자 | 상태 |\n|---|---|\n| 11월 25일 | 미확정 |\n| 11월 28일 | 확정 |\n\n지연 사유는 선사의 선복 조정이다."
+      }
+    ],
+    "rubric": {
+      "version": "DUAL_V1",
+      "task_solution_min_score": 40,
+      "ai_use_min_score": 40,
+      "verify_min_score": 12,
+      "criterion_max_scores": {"RESULT": 50, "PROMPT": 15, "VERIFY": 20, "IMPROVE": 15},
+      "required_checks": [
+        {
+          "check_id": "SHIPPING_DATE",
+          "label": "확정 선적일을 정확히 안내하고 미확정 일정을 확정처럼 약속하지 않기",
+          "rule": "최종 회신의 확정 선적일이 제공된 선적 일정표와 일치하고, 일정표에서 미확정으로 표시된 날짜를 확정 일정이라고 약속한 문장이 없으면 충족한다."
+        }
+      ]
+    }
+  }
+}

@@ -13,7 +13,7 @@ from sqlalchemy.dialects.mysql import insert
 from sqlalchemy.orm import Session
 
 from app.db import database_url, make_engine
-from app.models import Job, Lecture, Task, TaskMaterial
+from app.models import Attempt, Job, Lecture, LectureProgress, Task, TaskMaterial
 from app.models.catalog import CatalogRelease
 from app.services.input_limits import MAX_CATALOG_BYTES, json_size
 
@@ -60,7 +60,9 @@ class Rubric(ManifestModel):
 
 class CatalogLecture(ManifestModel):
     title: Title
-    youtube_video_id: Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9_-]{11}$")]
+    youtube_video_id: Annotated[
+        str, StringConstraints(pattern=r"^(?:[A-Za-z0-9_-]{11}|local:[a-z0-9][a-z0-9-]{0,13})$")
+    ]
     duration_sec: Annotated[int, Field(ge=1, le=86400)]
     sort_order: SortOrder
 
@@ -103,7 +105,46 @@ class PublishedCatalog:
     task_id: int
 
 
-def publish_catalog(session: Session, catalog: Catalog) -> PublishedCatalog:
+def adopt_unstarted_lecture(
+    session: Session, catalog: Catalog, job_id: int, lecture_id: int
+) -> tuple[Lecture, Task]:
+    existing = session.execute(
+        select(Lecture, Task)
+        .join(Task, Task.lecture_id == Lecture.id)
+        .where(Lecture.id == lecture_id, Lecture.job_id == job_id, Task.job_id == job_id)
+        .with_for_update()
+    ).one_or_none()
+    if existing is None:
+        raise PublishConflict("Existing lecture and assessment must belong to the catalog job.")
+    lecture, task = existing
+    history = (
+        select(CatalogRelease.lecture_id).where(CatalogRelease.lecture_id == lecture.id),
+        select(LectureProgress.lecture_id).where(LectureProgress.lecture_id == lecture.id),
+        select(Attempt.id).where(Attempt.task_id == task.id),
+    )
+    if any(session.scalar(query.limit(1).with_for_update()) is not None for query in history):
+        raise PublishConflict("The existing lecture is already released or has learner activity.")
+
+    materials = session.scalars(
+        select(TaskMaterial).where(TaskMaterial.task_id == task.id)
+        .order_by(TaskMaterial.sort_order, TaskMaterial.id)
+        .with_for_update()
+    )
+    assessment = {
+        name: getattr(task, name) for name in ("title", "situation", "instruction", "time_limit_min")
+    }
+    assessment["rubric"] = task.grading_rubric
+    assessment["materials"] = [{"title": m.title, "content": m.content} for m in materials]
+    if assessment != catalog.task.model_dump() or task.sort_order != catalog.lecture.sort_order:
+        raise PublishConflict("The existing assessment must match the catalog.")
+    for field, value in catalog.lecture.model_dump().items():
+        setattr(lecture, field, value)
+    return lecture, task
+
+
+def publish_catalog(
+    session: Session, catalog: Catalog, *, adopt_lecture_id: int | None = None
+) -> PublishedCatalog:
     """Publish atomically in the caller's transaction."""
     serialized = json.dumps(catalog.model_dump(), ensure_ascii=False, sort_keys=True)
     content_hash = sha256(serialized.encode()).hexdigest()
@@ -116,6 +157,8 @@ def publish_catalog(session: Session, catalog: Catalog) -> PublishedCatalog:
     if previous is not None:
         if previous.content_sha256 != content_hash:
             raise PublishConflict("Released content is immutable. Use a new version.")
+        if adopt_lecture_id is not None and adopt_lecture_id != previous.lecture_id:
+            raise PublishConflict("This release is already associated with another lecture.")
         task_id = session.scalar(select(Task.id).where(Task.lecture_id == previous.lecture_id))
         return PublishedCatalog(previous.lecture_id, task_id)
 
@@ -128,21 +171,26 @@ def publish_catalog(session: Session, catalog: Catalog) -> PublishedCatalog:
     if latest is not None and catalog.version <= latest.version:
         raise PublishConflict("The new version must be greater than the current version.")
 
-    lecture = Lecture(job_id=job_id, **catalog.lecture.model_dump())
-    session.add(lecture)
-    session.flush()
-    task = Task(
-        job_id=job_id, lecture_id=lecture.id, title=catalog.task.title,
-        situation=catalog.task.situation, instruction=catalog.task.instruction,
-        time_limit_min=catalog.task.time_limit_min, sort_order=lecture.sort_order,
-        grading_rubric=catalog.task.rubric.model_dump(),
-    )
-    session.add(task)
-    session.flush()
-    session.add_all(
-        TaskMaterial(task_id=task.id, sort_order=position, **material.model_dump())
-        for position, material in enumerate(catalog.task.materials, start=1)
-    )
+    if adopt_lecture_id is not None:
+        if latest is not None:
+            raise PublishConflict("Adoption is available for the first release only.")
+        lecture, task = adopt_unstarted_lecture(session, catalog, job_id, adopt_lecture_id)
+    else:
+        lecture = Lecture(job_id=job_id, **catalog.lecture.model_dump())
+        session.add(lecture)
+        session.flush()
+        task = Task(
+            job_id=job_id, lecture_id=lecture.id, title=catalog.task.title,
+            situation=catalog.task.situation, instruction=catalog.task.instruction,
+            time_limit_min=catalog.task.time_limit_min, sort_order=lecture.sort_order,
+            grading_rubric=catalog.task.rubric.model_dump(),
+        )
+        session.add(task)
+        session.flush()
+        session.add_all(
+            TaskMaterial(task_id=task.id, sort_order=position, **material.model_dump())
+            for position, material in enumerate(catalog.task.materials, start=1)
+        )
     if latest is not None:
         latest.active = False
     session.add(CatalogRelease(
@@ -157,6 +205,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("manifest", type=Path)
     parser.add_argument("--validate-only", action="store_true")
+    parser.add_argument("--adopt-unstarted-lecture", type=int, metavar="LECTURE_ID")
     args = parser.parse_args()
     catalog = Catalog.model_validate_json(args.manifest.read_text(encoding="utf-8-sig"))
     if args.validate_only:
@@ -166,7 +215,7 @@ def main() -> None:
     engine = make_engine(database_url())
     try:
         with Session(engine) as session, session.begin():
-            release = publish_catalog(session, catalog)
+            release = publish_catalog(session, catalog, adopt_lecture_id=args.adopt_unstarted_lecture)
         print(f"Published lecture {release.lecture_id} and task {release.task_id}.")
     finally:
         engine.dispose()

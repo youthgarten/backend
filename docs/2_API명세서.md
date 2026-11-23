@@ -298,7 +298,8 @@ Phaser 강의실에서 강의를 선택하면 영상 패널을 열기 위해 호
 }
 ```
 
-- 프론트는 유튜브 IFrame Player API로 영상을 띄우고 `last_position_sec`부터 재생한다. 패널에 수강 완료 기준(시청 구간 80%)과 현재 수강률을 표시한다.
+- `youtube_video_id`는 기존 YouTube ID 또는 같은 출처의 MP4 키 `local:<키>`를 반환한다. MP4 키는 `/lecture-media/<키>.mp4`에서 재생하며, 키 본문은 영문 소문자·숫자로 시작하고 하이픈을 포함해 최대 14자다.
+- 프론트는 `last_position_sec`부터 이어서 재생하고 수강 완료 기준(시청 구간 80%)과 현재 수강률을 표시한다.
 - `task_id`는 이 강의와 연결된 과제 ID이며, 연결 과제가 없으면 `null`이다. `completed = true`이고 연결 과제가 있으면 ‘시험장으로 이동’을 표시한다.
 
 ### POST /lectures/{id}/progress 🔒
@@ -998,7 +999,7 @@ Phaser 시험장 입구의 상호작용 지점에서 시험 패널을 열 때 �
    - 기존 응시의 스냅샷이 `LEGACY_TOTAL_V1`이면 이전 항목별 25점 및 총점 80점 통과 규칙으로 완료한다. 이미 채점을 마친 응시는 저장된 결과와 판정을 조회한다.
 6. 임대 토큰을 다시 확인한 뒤 한 트랜잭션으로 저장한다.
    - 사용자 행을 `SELECT ... FOR UPDATE`로 잠근다. 같은 과제의 응시 둘이 동시에 채점돼도 레벨이 두 번 오르지 않는다.
-   - `attempt_score` 4행과 근거 메시지·수정본 ID, `required_check_results`, `total_score`, `passed`, `summary_feedback`을 함께 저장하고 `status = GRADED`로 바꾼다. 응시에는 실제 `grading_model`, `grading_prompt_version`을 감사 정보로 남긴다. 이전 기준의 응시는 `required_check_results = NULL`로 저장한다.
+   - `attempt_score` 4행과 근거 메시지·수정본 ID, `required_check_results`, `total_score`, `passed`, `summary_feedback`을 함께 저장하고 `status = GRADED`로 바꾼다. 응시에는 `grading_model`, `grading_prompt_version`을 감사 정보로 남긴다. 이전 기준의 응시는 `required_check_results = NULL`로 저장한다.
    - 레벨을 `min(1 + 통과한 서로 다른 과정 수, 6)`으로 다시 계산한다. 과정 버전이 달라도 같은 `job_id + catalog_key`는 한 번만 세고, 공개 과정 밖의 기존 과제는 `task_id`별로 센다. 값이 올랐으면 `leveled_up = true`로 저장하고 트랜잭션이 끝난 뒤 멀티플레이 연결로 `player_updated`를 보낸다.
 7. 일시 오류는 임대를 풀고 다음 재시각까지 보류한다. 최대 3회 가져간 뒤에도 실패하거나 재시도할 수 없는 오류면 `status = GRADING_FAILED`와 축약된 `grading_failure`를 남긴다. 사용자는 `regrade`로 새 작업을 만들어 다시 시도할 수 있다.
 8. 작업은 MySQL에 남으므로 서버가 재시작돼도 유실되지 않는다. 만료된 임대는 다른 작업자가 다시 가져가며, `GRADING`인데 작업 행이 없는 이전 데이터만 시작 시 `GRADING_FAILED`로 복구한다.
@@ -1007,6 +1008,8 @@ Phaser 시험장 입구의 상호작용 지점에서 시험 패널을 열 때 �
 |---|---|---|---|
 | `chat(messages)` | `POST /attempts/{id}/messages` | 시스템 프롬프트 + 대화 기록 | AI 답변 문자열 |
 | `grade(context)` | 채점 작업 | 응시 스냅샷, 과제, 자료, 답안, 기록 | 항목별 점수와 근거, 필수 요건별 판정과 근거, 총평 JSON |
+
+서버의 `AI_PROVIDER`가 `codex_cli`이면 로컬 데모에서 Codex CLI를 사용하고 `chat_completions`이면 HTTP 제공자를 사용한다. 두 제공자는 동일한 채점 스키마와 판정 규칙을 사용한다. CLI 모델을 지정하지 않으면 `grading_model`에 `codex-cli-default`를 기록한다.
 
 ## 10. Phaser 학습 동선과 화면별 사용 API
 

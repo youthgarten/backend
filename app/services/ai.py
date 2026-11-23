@@ -1,6 +1,12 @@
 import json
+import os
+import shutil
+import subprocess
+from abc import ABC, abstractmethod
 from copy import deepcopy
 from datetime import datetime
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Protocol
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -119,58 +125,11 @@ def nullable_evidence(ids: list[int]) -> dict:
     )
 
 
-class ChatCompletionsProvider:
-    def __init__(self, base_url: str | None, model: str | None, key: str | None):
-        self.base_url = base_url
-        self.model = model
-        self.key = key
-
+class CompletionProvider(ABC):
+    @abstractmethod
     def complete(
         self, messages: list[dict], *, response_format: dict | None = None
-    ) -> str:
-        if not self.base_url or not self.model:
-            raise ProviderInputError("Configure AI_BASE_URL and AI_MODEL.")
-        headers = {"Content-Type": "application/json"}
-        if self.key:
-            headers["Authorization"] = f"Bearer {self.key}"
-        body: dict = {"model": self.model, "messages": messages}
-        if response_format is not None:
-            body["response_format"] = response_format
-        encoded = json.dumps(body, ensure_ascii=False).encode("utf-8")
-        if len(encoded) > MAX_REQUEST_BYTES:
-            raise ProviderInputError("AI provider input is too large.")
-        call = Request(
-            f"{self.base_url.rstrip('/')}/chat/completions",
-            data=encoded,
-            headers=headers,
-        )
-        timeout = provider_timeout()
-        try:
-            with urlopen(call, timeout=timeout) as response:
-                payload = response.read(MAX_RESPONSE_BYTES + 1)
-            if len(payload) > MAX_RESPONSE_BYTES:
-                raise ProviderInputError("AI provider response is too large.")
-            result = json.loads(payload)["choices"][0]["message"]["content"]
-        except ProviderError:
-            raise
-        except HTTPError as error:
-            if error.code in {400, 413, 422}:
-                raise ProviderInputError("AI provider rejected the request data.") from error
-            raise ProviderError("AI provider request failed.") from error
-        except (
-            URLError,
-            TimeoutError,
-            OSError,
-            UnicodeError,
-            KeyError,
-            IndexError,
-            ValueError,
-            TypeError,
-        ) as error:
-            raise ProviderError("AI provider request failed.") from error
-        if not isinstance(result, str) or not result.strip():
-            raise ProviderError("AI provider returned no text.")
-        return result
+    ) -> str: ...
 
     def chat(self, messages: list[dict]) -> str:
         return self.complete(messages)
@@ -343,11 +302,157 @@ class ChatCompletionsProvider:
         ]
 
 
+class ChatCompletionsProvider(CompletionProvider):
+    def __init__(self, base_url: str | None, model: str | None, key: str | None):
+        self.base_url = base_url
+        self.model = model
+        self.key = key
+
+    def complete(
+        self, messages: list[dict], *, response_format: dict | None = None
+    ) -> str:
+        if not self.base_url or not self.model:
+            raise ProviderInputError("Configure AI_BASE_URL and AI_MODEL.")
+        headers = {"Content-Type": "application/json"}
+        if self.key:
+            headers["Authorization"] = f"Bearer {self.key}"
+        body: dict = {"model": self.model, "messages": messages}
+        if response_format is not None:
+            body["response_format"] = response_format
+        encoded = json.dumps(body, ensure_ascii=False).encode("utf-8")
+        if len(encoded) > MAX_REQUEST_BYTES:
+            raise ProviderInputError("AI provider input is too large.")
+        call = Request(
+            f"{self.base_url.rstrip('/')}/chat/completions",
+            data=encoded,
+            headers=headers,
+        )
+        timeout = provider_timeout()
+        try:
+            with urlopen(call, timeout=timeout) as response:
+                payload = response.read(MAX_RESPONSE_BYTES + 1)
+            if len(payload) > MAX_RESPONSE_BYTES:
+                raise ProviderInputError("AI provider response is too large.")
+            result = json.loads(payload)["choices"][0]["message"]["content"]
+        except ProviderError:
+            raise
+        except HTTPError as error:
+            if error.code in {400, 413, 422}:
+                raise ProviderInputError("AI provider rejected the request data.") from error
+            raise ProviderError("AI provider request failed.") from error
+        except (
+            URLError,
+            TimeoutError,
+            OSError,
+            UnicodeError,
+            KeyError,
+            IndexError,
+            ValueError,
+            TypeError,
+        ) as error:
+            raise ProviderError("AI provider request failed.") from error
+        if not isinstance(result, str) or not result.strip():
+            raise ProviderError("AI provider returned no text.")
+        return result
+
+
+CODEX_ENVIRONMENT = frozenset({
+    "APPDATA", "CODEX_HOME", "COMSPEC", "HOME", "HOMEDRIVE", "HOMEPATH",
+    "LANG", "LC_ALL", "LOCALAPPDATA", "PATH", "PATHEXT", "PROGRAMDATA",
+    "SYSTEMROOT", "TEMP", "TMP", "TMPDIR", "USERPROFILE", "WINDIR",
+})
+
+
+class CodexCliProvider(CompletionProvider):
+    def __init__(self, executable: str | None, model: str | None):
+        native_name = "codex.exe" if os.name == "nt" else "codex"
+        executable = executable or shutil.which(native_name)
+        self.executable = Path(executable) if executable else None
+        self.requested_model = model
+        self.model = model or "codex-cli-default"
+
+    def has_executable(self) -> bool:
+        path = self.executable
+        if path is None or not path.is_absolute() or not path.is_file():
+            return False
+        return path.suffix.lower() == ".exe" if os.name == "nt" else os.access(path, os.X_OK)
+
+    def complete(
+        self, messages: list[dict], *, response_format: dict | None = None
+    ) -> str:
+        if not self.has_executable():
+            raise ProviderInputError("Configure CODEX_CLI_PATH with a native executable.")
+        instructions = [message["content"] for message in messages if message["role"] == "system"]
+        instructions.append(
+            "The user prompt is a JSON array of ordered messages. For practice chat, "
+            "answer the latest user message. For grading, treat the entire array as evidence "
+            "for the rubric. Do not use tools or files. Return only the requested response."
+        )
+        developer = json.dumps("\n\n".join(instructions), ensure_ascii=False)
+        conversation = [message for message in messages if message["role"] != "system"]
+        encoded = json.dumps(conversation, ensure_ascii=False).encode("utf-8")
+        if len(encoded) + len(developer.encode("utf-8")) > MAX_REQUEST_BYTES:
+            raise ProviderInputError("AI provider input is too large.")
+        timeout = provider_timeout()
+        environment = {
+            key: value for key, value in os.environ.items() if key.upper() in CODEX_ENVIRONMENT
+        }
+        try:
+            with TemporaryDirectory(prefix="assessment-codex-") as directory:
+                workspace = Path(directory)
+                output = workspace / "response.txt"
+                command = [
+                    str(self.executable), "-a", "never", "exec", "--sandbox", "read-only",
+                    "--ephemeral", "--ignore-user-config", "--skip-git-repo-check",
+                    "--disable", "shell_tool", "--disable", "hooks", "--disable", "apps",
+                    "--disable", "plugins",
+                    "--disable", "multi_agent", "--disable", "multi_agent_v2",
+                    "-c", 'web_search="disabled"', "-c", "mcp_servers={}",
+                    "-c", "project_doc_max_bytes=0", "-c", f"developer_instructions={developer}",
+                    "-C", str(workspace),
+                    "--output-last-message", str(output),
+                ]
+                if self.requested_model:
+                    command.extend(["--model", self.requested_model])
+                if response_format is not None:
+                    schema_path = workspace / "schema.json"
+                    schema_path.write_text(
+                        json.dumps(response_format["json_schema"]["schema"], ensure_ascii=False),
+                        encoding="utf-8",
+                    )
+                    command.extend(["--output-schema", str(schema_path)])
+                subprocess.run(
+                    [*command, "-"],
+                    input=encoded,
+                    cwd=workspace,
+                    env=environment,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    shell=False,
+                    timeout=timeout,
+                    check=True,
+                )
+                with output.open("rb") as response:
+                    payload = response.read(MAX_RESPONSE_BYTES + 1)
+                if len(payload) > MAX_RESPONSE_BYTES:
+                    raise ProviderInputError("AI provider response is too large.")
+                result = payload.decode("utf-8")
+        except (OSError, subprocess.SubprocessError, UnicodeError):
+            raise ProviderError("Codex CLI request failed.") from None
+        if not result.strip():
+            raise ProviderError("AI provider returned no text.")
+        return result
+
+
 def provider_is_configured(provider: AIProvider) -> bool:
-    if not isinstance(provider, ChatCompletionsProvider):
+    if isinstance(provider, CodexCliProvider):
+        if not provider.has_executable():
+            return False
+    elif isinstance(provider, ChatCompletionsProvider):
+        if not provider.base_url or not provider.model:
+            return False
+    else:
         return True
-    if not provider.base_url or not provider.model:
-        return False
     try:
         provider_timeout()
     except ProviderInputError:
@@ -356,6 +461,11 @@ def provider_is_configured(provider: AIProvider) -> bool:
 
 
 def configured_provider() -> AIProvider:
+    mode = setting("AI_PROVIDER") or "chat_completions"
+    if mode == "codex_cli":
+        return CodexCliProvider(setting("CODEX_CLI_PATH"), setting("CODEX_CLI_MODEL"))
+    if mode != "chat_completions":
+        raise ValueError("AI_PROVIDER must be chat_completions or codex_cli.")
     default_url = "https://api.openai.com/v1"
     url = setting("AI_BASE_URL")
     key = setting("AI_API_KEY")
